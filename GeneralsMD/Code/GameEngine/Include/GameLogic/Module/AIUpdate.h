@@ -62,6 +62,7 @@ class WorkerAIInterface;
 class HackInternetAIInterface;
 class AssaultTransportAIInterface;
 class JetAIUpdate;
+struct ParallelSteeringOutput;
 
 enum AIStateType : Int;
 enum HordeActionType : Int;
@@ -448,6 +449,11 @@ public:
 	Locomotor *getCurLocomotor() { return m_curLocomotor; }
 	LocomotorSetType getCurLocomotorSetType() const { return m_curLocomotorSet; }
 	Bool hasLocomotorForSurface(LocomotorSurfaceType surfaceType);
+
+	void setPrecomputedSteering( ParallelSteeringOutput *out ) { m_precomputedSteering = out; }
+	ParallelSteeringOutput *getPrecomputedSteering() { return m_precomputedSteering; }
+	const ParallelSteeringOutput *getPrecomputedSteering() const { return m_precomputedSteering; }
+	Bool populateParallelSteeringItem( ParallelSteeringItem *item );
 
 	// turret stuff.
 	WhichTurretType getWhichTurretForWeaponSlot(WeaponSlotType wslot, Real* turretAngle, Real* turretPitch = NULL) const;
@@ -976,6 +982,7 @@ private:
 	LocomotorSetType	m_curLocomotorSet;
 	LocoGoalType			m_locomotorGoalType;
 	Coord3D						m_locomotorGoalData;
+	ParallelSteeringOutput*		m_precomputedSteering;
 
 	// Turrets -------------------------------------------------------------------------------------------------
 	TurretAI*					m_turretAI[MAX_TURRETS];		// ai for our turret (or null if no turret)

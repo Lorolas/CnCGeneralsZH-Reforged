@@ -74,6 +74,7 @@
 #include "GameLogic/ScriptEngine.h"
 #include "GameLogic/TurretAI.h"
 #include "GameLogic/Weapon.h"
+#include "GameLogic/ParallelSteering.h"
 #include "Common/Radar.h"									// For TheRadar
 
 #define SLEEPY_AI
@@ -381,6 +382,7 @@ AIUpdateInterface::AIUpdateInterface( Thing *thing, const ModuleData* moduleData
 	m_curLocomotorSet = LOCOMOTORSET_INVALID;
 	m_locomotorGoalType = NONE;
 	m_locomotorGoalData.zero();
+	m_precomputedSteering = NULL;
 	for (i = 0; i < MAX_TURRETS; i++)
 		m_turretAI[i] = NULL;
 	m_turretSyncFlag = TURRET_INVALID;
@@ -3952,6 +3954,52 @@ Bool AIUpdateInterface::isValidLocomotorPosition(const Coord3D* pos) const
 	return TheAI->pathfinder()->validMovementPosition( getObject()->getCrusherLevel()>0, getObject()->getLayer(), m_locomotorSet, pos );
 }
 
+Bool AIUpdateInterface::populateParallelSteeringItem( ParallelSteeringItem *item )
+{
+	if( !item || !m_curLocomotor || !getPath() || getObject()->isKindOf( KINDOF_IMMOBILE ) )
+		return FALSE;
+
+	if( m_rescueUntil != 0 )
+		return FALSE;
+
+	if( m_locomotorGoalType != POSITION_ON_PATH )
+		return FALSE;
+
+	item->objectID = getObject()->getID();
+	item->object = getObject();
+	item->ai = this;
+	item->locomotor = m_curLocomotor;
+	item->currentPos = *getObject()->getPosition();
+	item->initialGoalPos = item->currentPos;
+	item->faceTargetPos.zero();
+	item->hasFaceTarget = FALSE;
+	item->fighting = FALSE;
+
+	item->desiredSpeed = m_desiredSpeed;
+	BodyModuleInterface *body = getObject()->getBodyModule();
+	item->maxSpeed = body ? m_curLocomotor->getMaxSpeedForCondition( body->getDamageState() ) : m_desiredSpeed;
+	item->bumpSpeedLimit = m_bumpSpeedLimit;
+	item->curMaxBlockedSpeed = m_curMaxBlockedSpeed;
+
+	item->onPathDistToGoal = 0.0f;
+	item->bendDist = 0.0f;
+	item->bendCos = 1.0f;
+	item->pathExtraDist = getPathExtraDistance();
+
+	item->layer = getObject()->getLayer();
+	item->locomotorSet = &m_locomotorSet;
+	item->path = getPath();
+
+	item->isGroundMovement = isDoingGroundMovement();
+	item->foot = getObject()->isKindOf( KINDOF_INFANTRY );
+	item->sideStep = m_sideStepSeen;
+	item->sideAway = m_sideStep;
+	item->blocked = ( m_blockedFrames > 0 );
+	item->boundingRadius = getObject()->getGeometryInfo().getBoundingCircleRadius();
+
+	return TRUE;
+}
+
 //-------------------------------------------------------------------------------------------------
 DECLARE_PERF_TIMER(doLocomotor)
 /**
@@ -4024,7 +4072,9 @@ UpdateSleepTime AIUpdateInterface::doLocomotor( void )
 	stuckRescue();
 
 	const Bool traceWasBlocked = m_isBlocked;	// -tracemove: the flag is cleared on the next line
-	const Coord3D tracePos = *getObject()->getPosition();	// -tracemove: where the last whole frame left it
+	const Coord3D *myPos = getObject()->getPosition();
+	const Real myOrientation = getObject()->getOrientation();
+	const Coord3D tracePos = *myPos;	// -tracemove: where the last whole frame left it
 	m_isBlocked = FALSE;
 	const Bool sideStep = m_sideStepSeen;
 	const Coord2D sideAway = m_sideStep;
@@ -4091,8 +4141,8 @@ UpdateSleepTime AIUpdateInterface::doLocomotor( void )
 						Real shortfall = getTurretArcShortfall(tur, ThePartitionManager->getRelativeAngle2D(getObject(), turretTarget->getPosition()));
 						if (shortfall != 0.0f)
 						{
-							Real heading = getObject()->getOrientation() + shortfall;
-							faceTargetPos = *getObject()->getPosition();
+							Real heading = myOrientation + shortfall;
+							faceTargetPos = *myPos;
 							faceTargetPos.x += Cos(heading) * HEADING_POINT_DIST;
 							faceTargetPos.y += Sin(heading) * HEADING_POINT_DIST;
 							faceTarget = &faceTargetPos;
@@ -4132,35 +4182,57 @@ UpdateSleepTime AIUpdateInterface::doLocomotor( void )
 							break;
 						}
 						Coord3D goalPos;
-						Real onPathDistToGoal;
+						Real onPathDistToGoal = 0.0f;
 						Real bendDist = 0.0f;
 						Real bendCos = 1.0f;
-						if (!isDoingGroundMovement())
+						Real speed = m_desiredSpeed;
+
+						if (m_precomputedSteering != NULL && m_precomputedSteering->valid)
 						{
-							// airborne locomotor.  Get the goal and distance direct to the goal, don't consider obstacles.
-							onPathDistToGoal = getPath()->computeFlightDistToGoal(getObject()->getPosition(), goalPos);
-						} 
-						else 
-						{
-							// Compute the actual goal position along the path to move towards.  Consider
-							// obstacles, and follow the intermediate path points.
-							ClosestPointOnPathInfo info;
-							CRCDEBUG_LOG(("AIUpdateInterface::doLocomotor() - calling computePointOnPath() for %s\n",
-								DescribeObject(getObject()).str()));
-							getPath()->computePointOnPath(getObject(), m_locomotorSet, *getObject()->getPosition(), info);
-							onPathDistToGoal = info.distAlongPath;
-							goalPos = info.posOnPath;
-							bendDist = info.bendDist;
-							bendCos = info.bendCos;
-							// layer is a possible bridge in the path.  Check & set the layer if applicable.
-							TheAI->pathfinder()->updateLayer(getObject(), info.layer);
+							goalPos = m_precomputedSteering->adjustedGoalPos;
+							onPathDistToGoal = m_precomputedSteering->onPathDistToGoal;
+							bendDist = m_precomputedSteering->bendDist;
+							bendCos = m_precomputedSteering->bendCos;
+							TheAI->pathfinder()->updateLayer(getObject(), m_precomputedSteering->layer);
+
+							m_precomputedSteering->valid = FALSE;
+							m_precomputedSteering = NULL;
 						}
+						else
+						{
+							if (m_precomputedSteering != NULL)
+							{
+								m_precomputedSteering->valid = FALSE;
+								m_precomputedSteering = NULL;
+							}
+
+							if (!isDoingGroundMovement())
+							{
+								// airborne locomotor.  Get the goal and distance direct to the goal, don't consider obstacles.
+								onPathDistToGoal = getPath()->computeFlightDistToGoal(myPos, goalPos);
+							} 
+							else 
+							{
+								// Compute the actual goal position along the path to move towards.  Consider
+								// obstacles, and follow the intermediate path points.
+								ClosestPointOnPathInfo info;
+								CRCDEBUG_LOG(("AIUpdateInterface::doLocomotor() - calling computePointOnPath() for %s\n",
+									DescribeObject(getObject()).str()));
+								getPath()->computePointOnPath(getObject(), m_locomotorSet, *myPos, info);
+								onPathDistToGoal = info.distAlongPath;
+								goalPos = info.posOnPath;
+								bendDist = info.bendDist;
+								bendCos = info.bendCos;
+								// layer is a possible bridge in the path.  Check & set the layer if applicable.
+								TheAI->pathfinder()->updateLayer(getObject(), info.layer);
+							}
+						}
+
 						// updateProgress and the rescue ladder read this as "where the route sends us";
 						// setLocomotorGoalPositionOnPath() zeroes it, so without this they measured
 						// against the map's origin corner
 						m_locomotorGoalData = goalPos;
 				 
-						Real speed = m_desiredSpeed;
 						Real myMaxSpeed = m_curLocomotor->getMaxSpeedForCondition(getObject()->getBodyModule()->getDamageState());
 						if( speed == FAST_AS_POSSIBLE || speed > myMaxSpeed )
 							speed = myMaxSpeed;
@@ -4220,7 +4292,7 @@ UpdateSleepTime AIUpdateInterface::doLocomotor( void )
 						if (sideStep)
 						{
 							const Real len = sqrtf(sideAway.x*sideAway.x + sideAway.y*sideAway.y);
-							const Coord3D *here = getObject()->getPosition();
+							const Coord3D *here = myPos;
 							Real gx = goalPos.x - here->x;
 							Real gy = goalPos.y - here->y;
 							const Real dist = sqrtf(gx*gx + gy*gy);
@@ -4271,7 +4343,7 @@ UpdateSleepTime AIUpdateInterface::doLocomotor( void )
 					{
 						if (m_doFinalPosition) 
 						{
-							Coord3D pos = *getObject()->getPosition();
+							Coord3D pos = *myPos;
 							Bool onGround = !getObject()->isAboveTerrain() && getObject()->getLayer() == LAYER_GROUND;
 							Real dx = m_finalPosition.x - pos.x;
 							Real dy = m_finalPosition.y - pos.y;
@@ -4720,6 +4792,7 @@ void AIUpdateInterface::aiDoCommand(const AICommandParms* parms)
 	}
 #endif
 
+	wakeUpNow();
   
 	switch (parms->m_cmd)
 	{

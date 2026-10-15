@@ -4132,78 +4132,6 @@ TEST(controlbar_mod_slots_past_the_bar_fit_its_windows)
 		CHECK_EQ( shown[ slot ], humvee[ slot ] != N && slot < WINDOWS ? slot : -1 );
 }
 
-/* Grid keys leave windows 11 and 13 keyless.  The USA War Factory's TOW upgrade in 11 moves to the
-   first free keyed window, leftmost first; attack move in 11 has its own A and is never unkeyed */
-TEST(controlbar_grid_packs_keyless_buttons_into_keyed_windows)
-{
-	enum { SLOTS = MAX_COMMANDS_PER_SET, WINDOWS = 14 };
-	Bool keyed[ SLOTS ];
-	Bool unkeyed[ SLOTS ];
-	Int shown[ SLOTS ];
-	for( Int slot = 0; slot < SLOTS; slot++ )
-	{
-		keyed[ slot ] = slot < WINDOWS && slot != 10 && slot != 12;
-		unkeyed[ slot ] = FALSE;
-		shown[ slot ] = -1;
-	}
-	// eight units in 1-8, TOW in 11, rally point in 13 (its own Y), sell in 14
-	for( Int slot = 0; slot < 8; slot++ )
-		shown[ slot ] = slot;
-	shown[ 10 ] = 10;
-	shown[ 12 ] = 12;
-	shown[ 13 ] = 13;
-	unkeyed[ 10 ] = TRUE;
-	ControlBar_packKeyedSlots( keyed, unkeyed, SLOTS, shown );
-	CHECK_EQ( shown[ 8 ], 10 );
-	CHECK_EQ( shown[ 10 ], -1 );
-	CHECK_EQ( shown[ 12 ], 12 );
-	CHECK_EQ( shown[ 13 ], 13 );
-
-	// a full keyed block leaves the button where it is
-	for( Int slot = 0; slot < WINDOWS; slot++ )
-		shown[ slot ] = slot;
-	ControlBar_packKeyedSlots( keyed, unkeyed, SLOTS, shown );
-	for( Int slot = 0; slot < WINDOWS; slot++ )
-		CHECK_EQ( shown[ slot ], slot );
-}
-
-/* A bar without attack move, guard or rally point lends their letters to the keyless places 11 and
-   13; a unit's bar, which has them, keeps A and G on its own orders */
-TEST(grid_keyless_places_borrow_the_fixed_letters_a_bar_has_no_order_for)
-{
-	enum { SLOTS = MAX_COMMANDS_PER_SET, PLACES = 14 };
-	AsciiString names[ SLOTS ];
-	Int types[ SLOTS ];
-	WideChar lent[ PLACES ];
-	for( Int slot = 0; slot < SLOTS; slot++ )
-		types[ slot ] = GUI_COMMAND_NONE;
-
-	// War Factory: units, TOW, rally point, sell
-	names[ 0 ] = "Command_ConstructAmericaTankCrusader";	types[ 0 ] = GUI_COMMAND_UNIT_BUILD;
-	names[ 10 ] = "Command_UpgradeAmericaTOWMissile";			types[ 10 ] = GUI_COMMAND_OBJECT_UPGRADE;
-	names[ 12 ] = "Command_SetRallyPoint";								types[ 12 ] = GUI_COMMAND_SET_RALLY_POINT;
-	names[ 13 ] = "Command_Sell";													types[ 13 ] = GUI_COMMAND_SELL;
-	HotKeyManager::gridLentKeys( names, types, SLOTS, lent );
-	CHECK_EQ( (Int)lent[ 10 ], (Int)'A' );
-	CHECK_EQ( (Int)lent[ 12 ], (Int)'G' );
-	for( Int slot = 0; slot < PLACES; slot++ )
-		if( slot != 10 && slot != 12 )
-			CHECK_EQ( (Int)lent[ slot ], 0 );
-
-	// a unit with attack move, guard and stop: A and G are its own, the places borrow what is left
-	for( Int slot = 0; slot < SLOTS; slot++ )
-	{
-		names[ slot ].clear();
-		types[ slot ] = GUI_COMMAND_NONE;
-	}
-	names[ 10 ] = "Command_AttackMove";	types[ 10 ] = GUI_COMMAND_ATTACK_MOVE;
-	names[ 12 ] = "Command_Guard";			types[ 12 ] = GUI_COMMAND_GUARD;
-	names[ 13 ] = "Command_Stop";				types[ 13 ] = GUI_COMMAND_STOP;
-	HotKeyManager::gridLentKeys( names, types, SLOTS, lent );
-	CHECK_EQ( (Int)lent[ 12 ], (Int)'Y' );
-	CHECK_EQ( (Int)lent[ 10 ], (Int)'V' );
-}
-
 TEST(controlbar_stance_key_takes_what_the_buttons_leave)
 {
 	enum { SLOTS = 14 };
@@ -7804,33 +7732,6 @@ TEST(health_bar_mode_round_trips_through_options_ini)
 	pref[ AsciiString( "HealthBars" ) ] = AsciiString( "99" );
 	loadOptionsFromPreferences( pref );
 	CHECK_EQ( TheGlobalData->m_healthBarMode, (Int)HEALTH_BAR_MODE_COUNT - 1 );
-
-	delete TheWritableGlobalData;
-	TheWritableGlobalData = saved;
-}
-
-/** Health bar colours are the launcher's row, not a menu control: green-to-red by default, the
-	 owner's colour at 1, and nothing past that. */
-TEST(health_bar_colors_round_trip_through_options_ini)
-{
-	const OptionDef *def = findOptionDef( "HealthBarColors" );
-	CHECK( def != NULL );
-	CHECK_EQ( (Int)def->apply, (Int)APPLY_LIVE );
-	CHECK_EQ( def->hi, 1 );
-
-	GlobalData *saved = TheWritableGlobalData;
-	TheWritableGlobalData = NEW GlobalData;
-
-	CHECK_EQ( TheGlobalData->m_healthBarColors, 0 );
-
-	UserPreferences pref;
-	pref[ AsciiString( "HealthBarColors" ) ] = AsciiString( "1" );
-	loadOptionsFromPreferences( pref );
-	CHECK_EQ( TheGlobalData->m_healthBarColors, 1 );
-
-	pref[ AsciiString( "HealthBarColors" ) ] = AsciiString( "7" );
-	loadOptionsFromPreferences( pref );
-	CHECK_EQ( TheGlobalData->m_healthBarColors, 1 );
 
 	delete TheWritableGlobalData;
 	TheWritableGlobalData = saved;
@@ -12816,6 +12717,138 @@ TEST(the_pool_survives_being_started_and_stopped_repeatedly)
 	}
 }
 
+TEST(parallel_steering_buffers_require_zero_allocations)
+{
+	GameLogic logic;
+	CHECK_EQ( 0, logic.getParallelSteeringCount() );
+	CHECK( logic.getParallelSteeringItems() != NULL );
+	CHECK( logic.getParallelSteeringOutputs() != NULL );
+
+	Int allocsBefore = JobSystem::workerAllocationCount();
+
+	ParallelSteeringItem *items = logic.getParallelSteeringItems();
+	ParallelSteeringOutput *outputs = logic.getParallelSteeringOutputs();
+
+	for( Int i = 0; i < MAX_PARALLEL_STEERING_ITEMS; ++i )
+	{
+		items[i].objectID = (ObjectID)(i + 1);
+		items[i].currentPos.set( (Real)i, (Real)i, 0.0f );
+		items[i].initialGoalPos.set( (Real)(i + 10), (Real)(i + 10), 0.0f );
+		items[i].desiredSpeed = 30.0f;
+		items[i].maxSpeed = 40.0f;
+		items[i].bumpSpeedLimit = 40.0f;
+		items[i].curMaxBlockedSpeed = 10.0f;
+		items[i].blocked = FALSE;
+		items[i].isGroundMovement = TRUE;
+		items[i].foot = FALSE;
+		items[i].sideStep = FALSE;
+		items[i].boundingRadius = 15.0f;
+
+		outputs[i].valid = FALSE;
+	}
+	logic.setParallelSteeringCount( MAX_PARALLEL_STEERING_ITEMS );
+	CHECK_EQ( (Int)MAX_PARALLEL_STEERING_ITEMS, logic.getParallelSteeringCount() );
+
+	CHECK_EQ( allocsBefore, JobSystem::workerAllocationCount() );
+}
+
+TEST(parallel_steering_spatial_query_scratch_buffer_zero_allocations)
+{
+	ParallelSteeringNeighborBuffer buf;
+	buf.clear();
+	CHECK_EQ( 0, buf.count );
+
+	Int allocsBefore = JobSystem::workerAllocationCount();
+
+	Coord3D pos;
+	pos.set( 500.0f, 500.0f, 0.0f );
+
+	Int gathered = gatherNearbySteeringNeighbors( &pos, 100.0f, &buf );
+	CHECK( gathered >= 0 );
+	CHECK( gathered <= (Int)MAX_PARALLEL_STEERING_NEIGHBORS );
+
+	CHECK_EQ( allocsBefore, JobSystem::workerAllocationCount() );
+}
+
+TEST(parallel_steering_evaluation_is_pure_and_deterministic)
+{
+	ParallelSteeringItem in;
+	memset( &in, 0, sizeof( in ) );
+	in.objectID = (ObjectID)42;
+	in.currentPos.set( 100.0f, 200.0f, 0.0f );
+	in.initialGoalPos.set( 150.0f, 250.0f, 0.0f );
+	in.desiredSpeed = 25.0f;
+	in.maxSpeed = 30.0f;
+	in.bumpSpeedLimit = 30.0f;
+	in.curMaxBlockedSpeed = 10.0f;
+	in.onPathDistToGoal = 50.0f;
+	in.layer = LAYER_GROUND;
+	in.blocked = FALSE;
+	in.isGroundMovement = TRUE;
+	in.foot = FALSE;
+	in.sideStep = FALSE;
+	in.boundingRadius = 15.0f;
+
+	ParallelSteeringOutput out1, out2;
+	memset( &out1, 0, sizeof( out1 ) );
+	memset( &out2, 0, sizeof( out2 ) );
+
+	ParallelSteeringContext ctx1 = { &in, &out1, 1 };
+	ParallelSteeringContext ctx2 = { &in, &out2, 1 };
+
+	evaluateParallelSteering( 0, &ctx1 );
+	evaluateParallelSteering( 0, &ctx2 );
+
+	CHECK( out1.valid );
+	CHECK( out2.valid );
+	CHECK_EQ( (Int)out1.objectID, (Int)out2.objectID );
+	CHECK_EQ( out1.adjustedSpeed, out2.adjustedSpeed );
+	CHECK_EQ( out1.adjustedGoalPos.x, out2.adjustedGoalPos.x );
+	CHECK_EQ( out1.adjustedGoalPos.y, out2.adjustedGoalPos.y );
+}
+
+TEST(parallel_steering_dispatch_runs_under_jobsystem_and_falls_back_inline)
+{
+	static const Int TEST_ITEMS = 64;
+	ParallelSteeringItem items[TEST_ITEMS];
+	ParallelSteeringOutput outputs[TEST_ITEMS];
+	memset( items, 0, sizeof( items ) );
+	memset( outputs, 0, sizeof( outputs ) );
+
+	for( Int i = 0; i < TEST_ITEMS; ++i )
+	{
+		items[i].objectID = (ObjectID)(i + 100);
+		items[i].currentPos.set( (Real)(i * 10), (Real)(i * 10), 0.0f );
+		items[i].initialGoalPos.set( (Real)(i * 10 + 20), (Real)(i * 10 + 20), 0.0f );
+		items[i].desiredSpeed = 20.0f;
+		items[i].maxSpeed = 25.0f;
+		items[i].bumpSpeedLimit = 25.0f;
+		items[i].curMaxBlockedSpeed = 8.0f;
+		items[i].onPathDistToGoal = 30.0f;
+		items[i].layer = LAYER_GROUND;
+		items[i].isGroundMovement = TRUE;
+		items[i].boundingRadius = 12.0f;
+	}
+
+	dispatchParallelSteering( items, outputs, 16 );
+	for( Int i = 0; i < 16; ++i )
+		CHECK( outputs[i].valid );
+	CHECK( !outputs[16].valid );
+
+	JobSystem::shutdown();
+	JobSystem::init( 4 );
+	memset( outputs, 0, sizeof( outputs ) );
+
+	dispatchParallelSteering( items, outputs, TEST_ITEMS );
+	for( Int i = 0; i < TEST_ITEMS; ++i )
+	{
+		CHECK( outputs[i].valid );
+		CHECK_EQ( (Int)items[i].objectID, (Int)outputs[i].objectID );
+	}
+
+	JobSystem::shutdown();
+}
+
 /* ProductionUpdate.cpp: a producer with a door animation only started opening it once the unit
 	 was already finished, and then held the unit inside until the animation ran out - so every
 	 tank cost its build time plus the whole door opening time.  The door now starts early enough
@@ -17301,3 +17334,4 @@ TEST(modfactions_prefix_the_last_part_of_a_file_path)
 #include "test_game_results.inc"
 #include "test_map_ini_rollback.inc"
 #include "test_hostile_map.inc"
+

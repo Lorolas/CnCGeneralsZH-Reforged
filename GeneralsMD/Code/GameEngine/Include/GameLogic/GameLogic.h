@@ -43,6 +43,7 @@
 #include "GameLogic/CRCSnapshotRing.h"
 #include "Common/STLTypedefs.h"
 #include "GameLogic/Module/UpdateModule.h"	// needed for DIRECT_UPDATEMODULE_ACCESS
+#include "GameLogic/ParallelSteering.h"
 
 /*
 	At one time, we distinguished between sleepy and nonsleepy
@@ -257,6 +258,12 @@ public:
 		m_rankLevelLimit = limit; 
 	}
 	
+	ParallelSteeringItem *getParallelSteeringItems() { return m_parallelSteeringItems; }
+	ParallelSteeringOutput *getParallelSteeringOutputs() { return m_parallelSteeringOutputs; }
+	Int getParallelSteeringCount() const { return m_parallelSteeringCount; }
+	void setParallelSteeringCount( Int count ) { m_parallelSteeringCount = count; }
+	void updateParallelSteering( void );
+	
 	// We need to allow access to this, because on a restartGame, we need to restart with the settings we started with
 	Int getRankPointsToAddAtGameStart() const { return m_rankPointsToAddAtGameStart; }
 
@@ -400,6 +407,10 @@ private:
 	// touching the pooled module. The copy must equal the module's value whenever a heap operation
 	// runs: every friend_setNextCallFrame on a queued module writes the entry at its index too.
 	std::vector<SleepyEntry> m_sleepyUpdates;
+	
+	ParallelSteeringItem m_parallelSteeringItems[MAX_PARALLEL_STEERING_ITEMS];
+	ParallelSteeringOutput m_parallelSteeringOutputs[MAX_PARALLEL_STEERING_ITEMS];
+	Int m_parallelSteeringCount;
 	
 #ifdef ALLOW_NONSLEEPY_UPDATES
 	// this is a plain old list, not a pq.

@@ -29,6 +29,7 @@
 // Author: Michael S. Booth, October 2001
 #include "PreRTS.h"	// This must go first in EVERY cpp file int the GameEngine
 #include "Lib/Clock.h"
+#include <atomic>
 
 #include "GameLogic/AIPathfind.h"
 
@@ -143,7 +144,7 @@ static const char *thePFSlotName[ PF_SLOTS ] =
 	"zones", "zonemod",
 	"movecheck", "expand", "mc.expand", "mc.line", "mc.linepass", "newbucket", "zone.merge" };
 static Int64 thePFTicks[ PF_SLOTS ];
-static Int thePFCalls[ PF_SLOTS ];
+static std::atomic<Int> thePFCalls[ PF_SLOTS ];
 static Int thePFDepth = 0;
 static char thePFReport[ 512 ];
 
@@ -171,14 +172,14 @@ static Int thePFEscapes = 0;				///< backing-out manoeuvres started
 static Int thePFCrowdRepaths = 0;		///< routes given up on because nothing on them could get past
 static Int thePFDithers = 0;					///< units caught driving a long way and gaining nothing
 
-inline void pfBump( Int slot ) { thePFCalls[ slot ]++; }
+inline void pfBump( Int slot ) { thePFCalls[ slot ].fetch_add( 1, std::memory_order_relaxed ); }
 
 class PathProfile
 {
 public:
 	PathProfile( Int slot ) : m_slot( slot ), m_timed( thePFDepth == 0 )
 	{
-		thePFCalls[ slot ]++;
+		thePFCalls[ slot ].fetch_add( 1, std::memory_order_relaxed );
 		if( m_timed )
 		{
 			thePFDepth++;
@@ -209,7 +210,7 @@ class PathProfileInner
 public:
 	PathProfileInner( Int slot ) : m_slot( slot )
 	{
-		thePFCalls[ slot ]++;
+		thePFCalls[ slot ].fetch_add( 1, std::memory_order_relaxed );
 		m_start = Clock_Ticks();
 	}
 	~PathProfileInner()
@@ -5159,9 +5160,9 @@ void Pathfinder::resetProfile( void )
 	{
 		// the frame that is ending is the only place the match totals can pick this up
 		thePFMatchTicks[ i ] += thePFTicks[ i ];
-		thePFMatchCalls[ i ] += thePFCalls[ i ];
+		thePFMatchCalls[ i ] += thePFCalls[ i ].load( std::memory_order_relaxed );
 		thePFTicks[ i ] = 0;
-		thePFCalls[ i ] = 0;
+		thePFCalls[ i ].store( 0, std::memory_order_relaxed );
 	}
 	thePFDepth = 0;
 }
@@ -5259,14 +5260,15 @@ const char *Pathfinder::getProfileReport( void )
 	Int len = 0;
 	for( Int i = 0; i < PF_SLOTS; i++ )
 	{
-		if( thePFCalls[ i ] == 0 )
+		const Int calls = thePFCalls[ i ].load( std::memory_order_relaxed );
+		if( calls == 0 )
 			continue;
 		const Real ms = freq ? (Real)(thePFTicks[ i ] * 1000.0 / (double)freq) : 0.0f;
 		char one[ 64 ];
 		if( i >= PF_MOVECHECK )		// the count-only group starts here
-			sprintf( one, "%s %dx ", thePFSlotName[ i ], thePFCalls[ i ] );
+			sprintf( one, "%s %dx ", thePFSlotName[ i ], calls );
 		else
-			sprintf( one, "%s %dx/%.1f ", thePFSlotName[ i ], thePFCalls[ i ], ms );
+			sprintf( one, "%s %dx/%.1f ", thePFSlotName[ i ], calls, ms );
 		Int oneLen = strlen( one );
 		if( len + oneLen >= (Int)sizeof( thePFReport ) - 1 )
 			break;

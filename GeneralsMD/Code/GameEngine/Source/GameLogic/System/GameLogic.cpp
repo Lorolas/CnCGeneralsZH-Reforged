@@ -230,6 +230,7 @@ GameLogic::GameLogic( void )
 	m_shouldValidateCRCs = FALSE;
 	
 	m_startNewGame = FALSE;
+	m_parallelSteeringCount = 0;
 	//
 
 	m_frame = 0;
@@ -3326,6 +3327,57 @@ void GameLogic::popSleepyUpdate()
 }
 
 // ------------------------------------------------------------------------------------------------
+void GameLogic::updateParallelSteering( void )
+{
+	m_parallelSteeringCount = 0;
+	if( m_sleepyUpdates.empty() )
+		return;
+
+	UnsignedInt now = m_frame;
+	for( size_t i = 0; i < m_sleepyUpdates.size(); ++i )
+	{
+		UpdateModulePtr u = m_sleepyUpdates[ i ].module;
+		if( !u || u->friend_getNextCallFrame() > now )
+			continue;
+
+		Object *obj = const_cast<Object *>( u->friend_getObject() );
+		if( !obj || obj->isEffectivelyDead() || obj->isKindOf( KINDOF_IMMOBILE ) )
+			continue;
+
+		AIUpdateInterface *ai = obj->getAIUpdateInterface();
+		if( !ai || u != static_cast<UpdateModulePtr>( ai ) )
+			continue;
+		if( !ai->isDoingGroundMovement() || ai->getPath() == NULL )
+			continue;
+
+		if( m_parallelSteeringCount >= MAX_PARALLEL_STEERING_ITEMS )
+			break;
+
+		if( ai->populateParallelSteeringItem( &m_parallelSteeringItems[ m_parallelSteeringCount ] ) )
+		{
+			m_parallelSteeringCount++;
+		}
+	}
+
+	if( m_parallelSteeringCount == 0 )
+		return;
+
+	std::sort( &m_parallelSteeringItems[ 0 ], &m_parallelSteeringItems[ m_parallelSteeringCount ],
+		[]( const ParallelSteeringItem &a, const ParallelSteeringItem &b ) {
+			return a.objectID < b.objectID;
+		} );
+
+	for( Int i = 0; i < m_parallelSteeringCount; ++i )
+	{
+		m_parallelSteeringOutputs[ i ].valid = FALSE;
+		if( m_parallelSteeringItems[ i ].ai )
+			m_parallelSteeringItems[ i ].ai->setPrecomputedSteering( &m_parallelSteeringOutputs[ i ] );
+	}
+
+	dispatchParallelSteering( m_parallelSteeringItems, m_parallelSteeringOutputs, m_parallelSteeringCount );
+}
+
+// ------------------------------------------------------------------------------------------------
 // this should be called only by UpdateModule, thanks.
 // ------------------------------------------------------------------------------------------------
 //DECLARE_PERF_TIMER(friend_awakenUpdateModule)
@@ -4852,6 +4904,8 @@ void GameLogic::update( void )
 	}
 #endif
 
+	updateParallelSteering();
+
 	{
 		while (!m_sleepyUpdates.empty())
 		{
@@ -4948,6 +5002,13 @@ void GameLogic::update( void )
 			rebalanceSleepyUpdate(0);
 		}
 	}
+
+	for( Int i = 0; i < m_parallelSteeringCount; ++i )
+	{
+		if( m_parallelSteeringItems[ i ].ai )
+			m_parallelSteeringItems[ i ].ai->setPrecomputedSteering( NULL );
+	}
+	m_parallelSteeringCount = 0;
 
 	validateSleepyUpdate();
 
