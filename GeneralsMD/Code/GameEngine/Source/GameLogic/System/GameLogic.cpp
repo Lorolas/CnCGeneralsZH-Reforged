@@ -30,6 +30,7 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file int the GameEngine
+#include <algorithm>
 #include "zhio.h"
 #include "Platform/SleepMilliseconds.h"
 #include "Lib/Clock.h"
@@ -283,7 +284,9 @@ void GameLogic::setDefaults( Bool loadingSaveGame )
 		it->module->friend_setIndexInLogic(-1);
 	}
 	m_sleepyUpdates.clear();
+	m_sleepyUpdates.reserve( 4096 );
 	m_curUpdateModule = NULL;
+	m_disabledObjects.clear();
 
 	//
 	// only reset the next object ID allocater counter when we're not loading a save game.
@@ -447,6 +450,8 @@ void GameLogic::reset( void )
 //	m_objHash.resize(OBJ_HASH_SIZE);
 	m_objVector.clear();
 	m_objVector.resize(OBJ_HASH_SIZE, NULL);
+	m_disabledObjects.clear();
+	m_sleepyUpdates.reserve( 4096 );
 
 	/* Unpause properly rather than just clearing the flag.  Loading a save from the in-game menu
 		 resets while the game is paused, and setGamePaused is where the mouse comes back, the audio
@@ -5008,12 +5013,18 @@ void GameLogic::update( void )
 #endif
 
 	{
-		//Handle disabled statii (and re-enable objects once frame matches)
-		for( Object *obj = m_objList; obj; obj = obj->getNextObject() )
+		// Handle disabled statii (and re-enable objects once frame matches)
+		// Sparse active set: only objects currently disabled are examined, bypassing full m_objList sweeps.
+		if( !m_disabledObjects.empty() )
 		{
-			if( obj->isDisabled() )
+			ObjectPtrVector activeDisabled = m_disabledObjects;
+			for( size_t i = 0; i < activeDisabled.size(); ++i )
 			{
-				obj->checkDisabledStatus();
+				Object *obj = activeDisabled[ i ];
+				if( obj && obj->isDisabled() )
+				{
+					obj->checkDisabledStatus();
+				}
 			}
 		}
 	}
@@ -5166,6 +5177,50 @@ void GameLogic::registerObject( Object *obj )
 		}
 	}
 
+}
+
+// ------------------------------------------------------------------------------------------------
+/** Register an object in the sparse disabled active list, sorted by ObjectID for determinism. */
+// ------------------------------------------------------------------------------------------------
+void GameLogic::registerDisabledObject( Object *obj )
+{
+	if (!obj)
+		return;
+
+	const ObjectID id = obj->getID();
+	ObjectPtrVector::iterator it = std::lower_bound(
+		m_disabledObjects.begin(), m_disabledObjects.end(), id,
+		[](const Object *a, ObjectID val) {
+			return a->getID() < val;
+		}
+	);
+
+	if (it == m_disabledObjects.end() || (*it)->getID() != id)
+	{
+		m_disabledObjects.insert(it, obj);
+	}
+}
+
+// ------------------------------------------------------------------------------------------------
+/** Unregister an object from the sparse disabled active list. */
+// ------------------------------------------------------------------------------------------------
+void GameLogic::unregisterDisabledObject( Object *obj )
+{
+	if (!obj || m_disabledObjects.empty())
+		return;
+
+	const ObjectID id = obj->getID();
+	ObjectPtrVector::iterator it = std::lower_bound(
+		m_disabledObjects.begin(), m_disabledObjects.end(), id,
+		[](const Object *a, ObjectID val) {
+			return a->getID() < val;
+		}
+	);
+
+	if (it != m_disabledObjects.end() && (*it)->getID() == id)
+	{
+		m_disabledObjects.erase(it);
+	}
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -6123,6 +6178,15 @@ void GameLogic::xfer( Xfer *xfer )
 				current = next;
 			}
 			m_objList = prev;
+		}
+
+		m_disabledObjects.clear();
+		for( Object *loadedObj = m_objList; loadedObj; loadedObj = loadedObj->getNextObject() )
+		{
+			if( loadedObj->isDisabled() )
+			{
+				registerDisabledObject( loadedObj );
+			}
 		}
 
 	}  // end else

@@ -4024,7 +4024,9 @@ UpdateSleepTime AIUpdateInterface::doLocomotor( void )
 	stuckRescue();
 
 	const Bool traceWasBlocked = m_isBlocked;	// -tracemove: the flag is cleared on the next line
-	const Coord3D tracePos = *getObject()->getPosition();	// -tracemove: where the last whole frame left it
+	const Coord3D *myPos = getObject()->getPosition();
+	const Real myOrientation = getObject()->getOrientation();
+	const Coord3D tracePos = *myPos;	// -tracemove: where the last whole frame left it
 	m_isBlocked = FALSE;
 	const Bool sideStep = m_sideStepSeen;
 	const Coord2D sideAway = m_sideStep;
@@ -4091,8 +4093,8 @@ UpdateSleepTime AIUpdateInterface::doLocomotor( void )
 						Real shortfall = getTurretArcShortfall(tur, ThePartitionManager->getRelativeAngle2D(getObject(), turretTarget->getPosition()));
 						if (shortfall != 0.0f)
 						{
-							Real heading = getObject()->getOrientation() + shortfall;
-							faceTargetPos = *getObject()->getPosition();
+							Real heading = myOrientation + shortfall;
+							faceTargetPos = *myPos;
 							faceTargetPos.x += Cos(heading) * HEADING_POINT_DIST;
 							faceTargetPos.y += Sin(heading) * HEADING_POINT_DIST;
 							faceTarget = &faceTargetPos;
@@ -4138,7 +4140,7 @@ UpdateSleepTime AIUpdateInterface::doLocomotor( void )
 						if (!isDoingGroundMovement())
 						{
 							// airborne locomotor.  Get the goal and distance direct to the goal, don't consider obstacles.
-							onPathDistToGoal = getPath()->computeFlightDistToGoal(getObject()->getPosition(), goalPos);
+							onPathDistToGoal = getPath()->computeFlightDistToGoal(myPos, goalPos);
 						} 
 						else 
 						{
@@ -4147,7 +4149,7 @@ UpdateSleepTime AIUpdateInterface::doLocomotor( void )
 							ClosestPointOnPathInfo info;
 							CRCDEBUG_LOG(("AIUpdateInterface::doLocomotor() - calling computePointOnPath() for %s\n",
 								DescribeObject(getObject()).str()));
-							getPath()->computePointOnPath(getObject(), m_locomotorSet, *getObject()->getPosition(), info);
+							getPath()->computePointOnPath(getObject(), m_locomotorSet, *myPos, info);
 							onPathDistToGoal = info.distAlongPath;
 							goalPos = info.posOnPath;
 							bendDist = info.bendDist;
@@ -4220,7 +4222,7 @@ UpdateSleepTime AIUpdateInterface::doLocomotor( void )
 						if (sideStep)
 						{
 							const Real len = sqrtf(sideAway.x*sideAway.x + sideAway.y*sideAway.y);
-							const Coord3D *here = getObject()->getPosition();
+							const Coord3D *here = myPos;
 							Real gx = goalPos.x - here->x;
 							Real gy = goalPos.y - here->y;
 							const Real dist = sqrtf(gx*gx + gy*gy);
@@ -4271,7 +4273,7 @@ UpdateSleepTime AIUpdateInterface::doLocomotor( void )
 					{
 						if (m_doFinalPosition) 
 						{
-							Coord3D pos = *getObject()->getPosition();
+							Coord3D pos = *myPos;
 							Bool onGround = !getObject()->isAboveTerrain() && getObject()->getLayer() == LAYER_GROUND;
 							Real dx = m_finalPosition.x - pos.x;
 							Real dy = m_finalPosition.y - pos.y;

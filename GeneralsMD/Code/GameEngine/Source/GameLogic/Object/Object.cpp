@@ -613,6 +613,10 @@ void Object::initObject()
 //-------------------------------------------------------------------------------------------------
 Object::~Object()
 {
+	if (TheGameLogic && isDisabled())
+	{
+		TheGameLogic->unregisterDisabledObject( this );
+	}
 
 	// tell the AI the building is gone
 	/// @todo Generalize the notion of objects entering and leaving the world, so we don't have to special case this
@@ -2399,6 +2403,10 @@ void Object::setDisabledUntil( DisabledType type, UnsignedInt frame )
 	if (edgeCase) {
 		onDisabledEdge(true);
 	}
+
+	if (TheGameLogic && isDisabled()) {
+		TheGameLogic->registerDisabledObject(this);
+	}
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -2519,6 +2527,8 @@ Bool Object::clearDisabled( DisabledType type )
 
 	// if we're no longer disabled by anything, then call the edge function.
 	if (!isDisabled()) {
+		if (TheGameLogic)
+			TheGameLogic->unregisterDisabledObject(this);
 		onDisabledEdge(false);
 	}
 	return TRUE;
@@ -2542,6 +2552,11 @@ void Object::checkDisabledStatus()
 				m_disabledMask.set( type, 0 );
 			}
 		}
+	}
+	if (!isDisabled())
+	{
+		if (TheGameLogic)
+			TheGameLogic->unregisterDisabledObject(this);
 	}
 }
 
@@ -2974,6 +2989,11 @@ Real Object::calculateHeightAboveTerrain(void) const
 //-------------------------------------------------------------------------------------------------
 void Object::removeFromList(Object **pListHead)
 {
+	if (TheGameLogic && isDisabled())
+	{
+		TheGameLogic->unregisterDisabledObject( this );
+	}
+
 	if (m_next)
 		m_next->m_prev = m_prev;
 

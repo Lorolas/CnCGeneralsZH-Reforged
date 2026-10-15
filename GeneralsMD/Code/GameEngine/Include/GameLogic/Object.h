@@ -235,6 +235,7 @@ public:
 
 	// ids and binding
 	ObjectID getID() const { return m_id; }												///< this object's unique ID
+	void friend_setID( ObjectID id ) { m_id = id; }
 	void friend_bindToDrawable( Drawable *draw );									///< set drawable association. for use ONLY by GameLogic!
 	Drawable* getDrawable() const { return m_drawable; }					///< drawable (if any) bound to obj
 

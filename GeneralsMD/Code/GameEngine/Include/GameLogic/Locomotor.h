@@ -248,6 +248,13 @@ public:
 		resting on the ground), false if not (eg, we are hovering or circling)
 	*/
 	Bool locoUpdate_maintainCurrentPosition(Object* obj); 
+	inline Bool isMaintainPosValid() const { return getFlag(MAINTAIN_POS_IS_VALID); }
+	inline Bool canRestWithoutCalling() const
+	{
+		if (!m_template) return FALSE;
+		LocomotorAppearance app = m_template->m_appearance;
+		return (app == LOCO_WHEELS_FOUR || app == LOCO_TREADS || app == LOCO_HOVER || app == LOCO_MOTORCYCLE);
+	} 
 
 	Real getMaxSpeedForCondition(BodyDamageType condition) const;  ///< get max speed given condition
 	Real getMaxTurnRate(BodyDamageType condition) const;  ///< get max turning rate given condition

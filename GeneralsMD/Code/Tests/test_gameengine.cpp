@@ -17301,3 +17301,52 @@ TEST(modfactions_prefix_the_last_part_of_a_file_path)
 #include "test_game_results.inc"
 #include "test_map_ini_rollback.inc"
 #include "test_hostile_map.inc"
+
+TEST(sparse_active_sets_registration_and_sorting)
+{
+	GameLogic logic;
+	std::vector<char> buf1(sizeof(Object), 0);
+	std::vector<char> buf2(sizeof(Object), 0);
+	std::vector<char> buf3(sizeof(Object), 0);
+	Object *obj1 = (Object*)buf1.data();
+	Object *obj2 = (Object*)buf2.data();
+	Object *obj3 = (Object*)buf3.data();
+	obj1->friend_setID((ObjectID)100);
+	obj2->friend_setID((ObjectID)50);
+	obj3->friend_setID((ObjectID)75);
+
+	logic.registerDisabledObject(obj1);
+	logic.registerDisabledObject(obj2);
+	logic.registerDisabledObject(obj3);
+
+	const ObjectPtrVector& list = logic.getDisabledObjects();
+	CHECK_EQ((int)list.size(), 3);
+	CHECK_EQ((int)list[0]->getID(), 50);
+	CHECK_EQ((int)list[1]->getID(), 75);
+	CHECK_EQ((int)list[2]->getID(), 100);
+
+	// Duplicate registration is idempotent
+	logic.registerDisabledObject(obj2);
+	CHECK_EQ((int)list.size(), 3);
+
+	// Deregistration
+	logic.unregisterDisabledObject(obj2);
+	CHECK_EQ((int)list.size(), 2);
+	CHECK_EQ((int)list[0]->getID(), 75);
+	CHECK_EQ((int)list[1]->getID(), 100);
+
+	logic.unregisterDisabledObject(obj1);
+	CHECK_EQ((int)list.size(), 1);
+	CHECK_EQ((int)list[0]->getID(), 75);
+
+	logic.unregisterDisabledObject(obj3);
+	CHECK_EQ((int)list.size(), 0);
+}
+
+TEST(sleepy_update_queue_layout_and_heap_consistency)
+{
+	CHECK_EQ((int)sizeof(SleepyEntry), 16);
+	GameLogic logic;
+	logic.validateSleepyUpdate();
+}
+

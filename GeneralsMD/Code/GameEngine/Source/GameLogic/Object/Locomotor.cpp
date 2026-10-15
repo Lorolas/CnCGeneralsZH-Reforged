@@ -1171,7 +1171,8 @@ void Locomotor::locoUpdate_moveTowardsPosition(Object* obj, const Coord3D& goalP
 {
 	setFlag(MAINTAIN_POS_IS_VALID, false);
 
-	BodyDamageType bdt = obj->getBodyModule()->getDamageState();
+	BodyModuleInterface *body = obj->getBodyModule();
+	BodyDamageType bdt = body ? body->getDamageState() : BODY_PRISTINE;
 	Real maxSpeed = getMaxSpeedForCondition(bdt);
 	
 	// sanity, we cannot use desired speed that is greater than our max speed we are capable of moving at
@@ -1201,12 +1202,17 @@ void Locomotor::locoUpdate_moveTowardsPosition(Object* obj, const Coord3D& goalP
 //	DEBUG_ASSERTLOG(obj->getID() != TheObjectIDToDebug, ("locoUpdate_moveTowardsPosition %f %f %f (dtg %f, spd %f), speed %f (%f)\n",goalPos.x,goalPos.y,goalPos.z,onPathDistToGoal,desiredSpeed,physics->getSpeed(),physics->getForwardSpeed2D()));
 #endif
 
+	const Coord3D *objPos = obj->getPosition();
+	const Real objX = objPos->x;
+	const Real objY = objPos->y;
+	const Real objZ = objPos->z;
+
 	//
 	// do not allow for invalid positions that the pathfinder cannot handle ... for airborne
 	// objects we don't need the pathfinder so we'll ignore this
 	//
 	if( BitTest( m_template->m_surfaces, LOCOMOTORSURFACE_AIR ) == false &&
-			!TheAI->pathfinder()->validMovementTerrain(obj->getLayer(), this, obj->getPosition()) && 
+			!TheAI->pathfinder()->validMovementTerrain(obj->getLayer(), this, objPos) && 
 			!getFlag(ALLOW_INVALID_POSITION)) 
 	{
 		// Somehow, we have gotten to an invalid location.
@@ -1218,10 +1224,10 @@ void Locomotor::locoUpdate_moveTowardsPosition(Object* obj, const Coord3D& goalP
 	}
 
 	// If the actual distance is farther, then use the actual distance so we get there.
-	Real dx = goalPos.x - obj->getPosition()->x;
-	Real dy = goalPos.y - obj->getPosition()->y;
-	Real dz = goalPos.z - obj->getPosition()->z;
-	Real dist = sqrt(dx*dx+dy*dy);
+	Real dx = goalPos.x - objX;
+	Real dy = goalPos.y - objY;
+	Real dz = goalPos.z - objZ;
+	Real dist = sqrtf(dx*dx+dy*dy);
 	if (dist>onPathDistToGoal) 
 	{
 		if (!obj->isKindOf(KINDOF_PROJECTILE) && dist>2*onPathDistToGoal) 
@@ -1234,8 +1240,8 @@ void Locomotor::locoUpdate_moveTowardsPosition(Object* obj, const Coord3D& goalP
 	Coord3D nullAccel;							
 	
 	Bool treatAsAirborne = false;
-	Coord3D pos = *obj->getPosition();
-	Real heightAboveSurface = pos.z - TheTerrainLogic->getLayerHeight(pos.x, pos.y, obj->getLayer());
+	Coord3D pos = *objPos;
+	Real heightAboveSurface = objZ - TheTerrainLogic->getLayerHeight(objX, objY, obj->getLayer());
 	
 	if( obj->getStatusBits().test( OBJECT_STATUS_DECK_HEIGHT_OFFSET ) )
 	{
@@ -1270,7 +1276,7 @@ void Locomotor::locoUpdate_moveTowardsPosition(Object* obj, const Coord3D& goalP
 	if (*blocked) 
 	{
 		physics->scrubVelocity2D(desiredSpeed); // stop if we are about to run into the blocking object.
-		Real turnRate = getMaxTurnRate(obj->getBodyModule()->getDamageState());
+		Real turnRate = getMaxTurnRate(bdt);
 		if (m_template->m_wanderWidthFactor == 0.0f) 
 		{
 			*blocked = (TURN_NONE != rotateObjAroundLocoPivot(obj, goalPos, turnRate));

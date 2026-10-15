@@ -117,6 +117,7 @@ struct SleepyEntry
 	UnsignedInt priority;
 	UpdateModulePtr module;
 };
+static_assert(sizeof(SleepyEntry) == 16, "SleepyEntry layout must be exactly 16 bytes for cache line alignment");
 
 // ------------------------------------------------------------------------------------------------
 /**
@@ -178,6 +179,10 @@ public:
 	Object *findObjectByID( ObjectID id );								///< Given an ObjectID, return a pointer to the object.
  	Object *getFirstObject( void );									///< Returns the "first" object in the world. When used with the object method "getNextObject()", all objects in the world can be iterated.
 	ObjectID allocateObjectID( void );							///< Returns a new unique object id
+
+	void registerDisabledObject( Object *obj );					///< Register an object in the sparse disabled active list
+	void unregisterDisabledObject( Object *obj );				///< Unregister an object from the sparse disabled active list
+	const ObjectPtrVector& getDisabledObjects( void ) const { return m_disabledObjects; }
 
 	// super hack
 	void startNewGame( Bool loadSaveGame );
@@ -320,6 +325,7 @@ public:
 
 	// this should be called only by UpdateModule, thanks.
 	void friend_awakenUpdateModule(Object* obj, UpdateModulePtr update, UnsignedInt whenToWakeUp);
+	void validateSleepyUpdate() const;
 
 protected:
 
@@ -338,7 +344,6 @@ private:
 	Int rebalanceParentSleepyUpdate(Int i);
 	Int rebalanceChildSleepyUpdate(Int i);
 	void remakeSleepyUpdate();
-	void validateSleepyUpdate() const;
 
 private:
 
@@ -391,6 +396,7 @@ private:
 	Object* m_objList;																			///< All of the objects in the world.
 //	ObjectPtrHash m_objHash;																///< Used for ObjectID lookups
 	ObjectPtrVector m_objVector;
+	ObjectPtrVector m_disabledObjects;															///< Sparse active list of disabled objects, sorted by ObjectID
 
 	// this is a vector, but is maintained as a priority queue.
 	// never modify it directly; please use the proper access methods.
