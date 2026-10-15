@@ -824,7 +824,7 @@ if(ZH_PLATFORM_WINDOWS)
 set(EABD_GEN ${CMAKE_CURRENT_BINARY_DIR}/generated/EABrowserDispatch)
 file(MAKE_DIRECTORY ${EABD_GEN})
 # midl.exe ships with the Windows SDK, not on PATH at configure time.
-file(GLOB MIDL_HINTS "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/*/x86")
+file(GLOB MIDL_HINTS "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/*/x86" "C:/Windows Kits/10/bin/*/x86")
 find_program(MIDL_EXECUTABLE midl HINTS ${MIDL_HINTS} REQUIRED)
 add_custom_command(
   OUTPUT ${EABD_GEN}/BrowserDispatch.h ${EABD_GEN}/BrowserDispatch_i.c

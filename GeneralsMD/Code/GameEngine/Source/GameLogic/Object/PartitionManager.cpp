@@ -292,6 +292,20 @@ inline Bool filtersAllow(PartitionFilter **filters, Object *objOther)
 }
 
 //-----------------------------------------------------------------------------
+inline Bool filtersAllowCell(PartitionFilter **filters, const PartitionCell *cell)
+{
+	if (filters)
+	{
+		for (PartitionFilter **fp = filters; *fp; fp++)
+		{
+			if (!(*fp)->allowCell(cell))
+				return false;
+		}
+	}
+	return true;
+}
+
+//-----------------------------------------------------------------------------
 inline void vecDiff_2D(const Coord3D *posA, const Coord3D *posB, Coord3D *resultVec)
 {
 	DEBUG_ASSERTCRASH(posA && posB && resultVec, ("null parm"));
@@ -1202,6 +1216,27 @@ void CellAndObjectIntersection::friend_removeFromCellList(CellAndObjectIntersect
 }
 
 //-----------------------------------------------------------------------------
+static inline UnsignedByte getObjectCategory(const PartitionData *module)
+{
+	if (!module)
+		return CELL_CATEGORY_NONE;
+	const Object *obj = module->getObject();
+	if (obj)
+	{
+		if (obj->isKindOf(KINDOF_STRUCTURE))
+			return CELL_CATEGORY_STRUCTURE;
+		if (obj->isKindOf(KINDOF_OBSTACLE) || obj->isKindOf(KINDOF_IMMOBILE))
+			return CELL_CATEGORY_OBSTACLE;
+		if (obj->isKindOf(KINDOF_VEHICLE) || obj->isKindOf(KINDOF_INFANTRY) || obj->isKindOf(KINDOF_AIRCRAFT))
+			return CELL_CATEGORY_DYNAMIC;
+		return CELL_CATEGORY_NONE;
+	}
+	if (module->getGhostObject())
+		return CELL_CATEGORY_STRUCTURE;
+	return CELL_CATEGORY_NONE;
+}
+
+//-----------------------------------------------------------------------------
 void CellAndObjectIntersection::addCoverage(PartitionCell *cell, PartitionData *module)
 {
 	DEBUG_ASSERTCRASH(m_cell == NULL || m_cell == cell, ("mismatch"));
@@ -1215,8 +1250,12 @@ void CellAndObjectIntersection::addCoverage(PartitionCell *cell, PartitionData *
 
 	if (m_cell == NULL)
 	{
+		m_cell = cell;
+		m_module = module;
 		cell->friend_addToCellList(this);
 		cell->addPlayerCoi(module->friend_getCountedPlayer());
+		cell->addCategory(getObjectCategory(module));
+		return;
 	}
 
 	m_cell = cell;
@@ -1234,6 +1273,7 @@ void CellAndObjectIntersection::removeAllCoverage()
 
 	m_cell->friend_removeFromCellList(this);
 	m_cell->removePlayerCoi(m_module->friend_getCountedPlayer());
+	m_cell->removeCategory(getObjectCategory(m_module));
 	m_cell = NULL;
 	m_module = NULL;
 }
@@ -1252,6 +1292,13 @@ PartitionCell::PartitionCell()
 	m_firstCoiInCell = NULL;
 	m_coiCount = 0;
 	m_playerCoiMask = PLAYERMASK_NONE;
+	m_categoryMask = 0;
+	m_inlineCount = 0;
+	for (int i = 0; i < CELL_INLINE_MODULE_CAPACITY; ++i)
+		m_inlineModules[i] = NULL;
+	m_dynamicCount = 0;
+	m_structureCount = 0;
+	m_obstacleCount = 0;
 #ifdef PM_CACHE_TERRAIN_HEIGHT
 	m_loTerrainZ = HUGE_DIST;		// huge positive
 	m_hiTerrainZ = -HUGE_DIST;	// huge negative
@@ -1535,7 +1582,26 @@ void PartitionCell::friend_addToCellList(CellAndObjectIntersection *coi)
 	{
 		coi->friend_addToCellList(&m_firstCoiInCell);
 		++m_coiCount;
+		PartitionData *mod = coi->getModule();
+		if (mod && m_inlineCount < CELL_INLINE_MODULE_CAPACITY)
+		{
+			m_inlineModules[m_inlineCount++] = mod;
+		}
 	}
+}
+
+//-----------------------------------------------------------------------------
+void PartitionCell::rebuildInlineModules()
+{
+	m_inlineCount = 0;
+	for (CellAndObjectIntersection *c = m_firstCoiInCell; c && m_inlineCount < CELL_INLINE_MODULE_CAPACITY; c = c->getNextCoi())
+	{
+		PartitionData *mod = c->getModule();
+		if (mod)
+			m_inlineModules[m_inlineCount++] = mod;
+	}
+	for (Int i = m_inlineCount; i < CELL_INLINE_MODULE_CAPACITY; ++i)
+		m_inlineModules[i] = NULL;
 }
 
 //-----------------------------------------------------------------------------
@@ -1545,6 +1611,23 @@ void PartitionCell::friend_removeFromCellList(CellAndObjectIntersection *coi)
 	{
 		coi->friend_removeFromCellList(&m_firstCoiInCell);
 		--m_coiCount;
+		PartitionData *mod = coi->getModule();
+		if (mod)
+		{
+			for (Int i = 0; i < m_inlineCount; ++i)
+			{
+				if (m_inlineModules[i] == mod)
+				{
+					m_inlineModules[i] = m_inlineModules[--m_inlineCount];
+					m_inlineModules[m_inlineCount] = NULL;
+					if (m_coiCount >= CELL_INLINE_MODULE_CAPACITY)
+					{
+						rebuildInlineModules();
+					}
+					break;
+				}
+			}
+		}
 	}
 }
 
@@ -1565,6 +1648,49 @@ void PartitionCell::removePlayerCoi(Int playerIndex)
 	DEBUG_ASSERTCRASH(m_playerCoiCount[playerIndex] > 0, ("player coi count underflow"));
 	if (--m_playerCoiCount[playerIndex] == 0)
 		m_playerCoiMask &= (PlayerMaskType)~(1 << playerIndex);
+}
+
+//-----------------------------------------------------------------------------
+void PartitionCell::addCategory(UnsignedByte category)
+{
+	if (category & CELL_CATEGORY_DYNAMIC)
+	{
+		if (m_dynamicCount++ == 0)
+			m_categoryMask |= CELL_CATEGORY_DYNAMIC;
+	}
+	if (category & CELL_CATEGORY_STRUCTURE)
+	{
+		if (m_structureCount++ == 0)
+			m_categoryMask |= CELL_CATEGORY_STRUCTURE;
+	}
+	if (category & CELL_CATEGORY_OBSTACLE)
+	{
+		if (m_obstacleCount++ == 0)
+			m_categoryMask |= CELL_CATEGORY_OBSTACLE;
+	}
+}
+
+//-----------------------------------------------------------------------------
+void PartitionCell::removeCategory(UnsignedByte category)
+{
+	if (category & CELL_CATEGORY_DYNAMIC)
+	{
+		DEBUG_ASSERTCRASH(m_dynamicCount > 0, ("dynamic count underflow"));
+		if (--m_dynamicCount == 0)
+			m_categoryMask &= ~CELL_CATEGORY_DYNAMIC;
+	}
+	if (category & CELL_CATEGORY_STRUCTURE)
+	{
+		DEBUG_ASSERTCRASH(m_structureCount > 0, ("structure count underflow"));
+		if (--m_structureCount == 0)
+			m_categoryMask &= ~CELL_CATEGORY_STRUCTURE;
+	}
+	if (category & CELL_CATEGORY_OBSTACLE)
+	{
+		DEBUG_ASSERTCRASH(m_obstacleCount > 0, ("obstacle count underflow"));
+		if (--m_obstacleCount == 0)
+			m_categoryMask &= ~CELL_CATEGORY_OBSTACLE;
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -2306,6 +2432,12 @@ void PartitionData::refreshCountedPlayer()
 		}
 	}
 	m_countedPlayer = newPlayer;
+}
+
+//-----------------------------------------------------------------------------
+void PartitionData::notifyPlayerChanged(Int oldPlayer, Int newPlayer)
+{
+	refreshCountedPlayer();
 }
 
 //-----------------------------------------------------------------------------
@@ -3533,59 +3665,119 @@ Object *PartitionManager::getClosestObjects(
 			if (thisCell == NULL)
 				continue;
 
+			if (thisCell->getCoiCount() == 0)
+				continue;
+
 			// An idle guard asks this for enemies only, and most cells around it hold its own base
 			// or nothing; every Object there would fail the filters anyway, so the answer is the same.
 			if (onlyPlayers != PLAYERMASK_ALL && !thisCell->hasCoiOfPlayers(onlyPlayers))
 				continue;
 
-			for (CellAndObjectIntersection *thisCoi = thisCell->getFirstCoiInCell(); thisCoi; thisCoi = thisCoi->getNextCoi())
+			if (!filtersAllowCell(filters, thisCell))
+				continue;
+
+			const Int inlineCount = thisCell->getInlineCount();
+			if (thisCell->getCoiCount() <= CELL_INLINE_MODULE_CAPACITY && inlineCount == thisCell->getCoiCount())
 			{
-				PartitionData *thisMod = thisCoi->getModule();
-				Object *thisObj = thisMod->getObject();
-				++thePartitionQueryObjects;
-
-				// never compare against ourself.
-				if (thisObj == obj || thisObj == NULL)
-					continue;
-
-				// since an object can exist in multiple COIs, we use this to avoid processing
-				// the same one more than once.
-				if (thisMod->friend_getDoneFlag() == theIterFlag)
-					continue;
-				thisMod->friend_setDoneFlag(theIterFlag);
-			
-				Real thisDistSqr;
-				Coord3D distVec;
-				if (!(*distProc)(objPos, objToUse, thisObj->getPosition(), thisObj, thisDistSqr, distVec, closestDistSqr))
-					continue;
-
-				if (!filtersAllow(filters, thisObj))
-					continue;
-
-				// ok, this is within the range, and the filters allow it.
-				// add it to the iter, if we have one....
-				if (iterArg)
+				for (Int modIdx = 0; modIdx < inlineCount; ++modIdx)
 				{
-					iterArg->insert(thisObj, thisDistSqr);
-				}
-				else
-				{
-					// hey, this is the new closest object! cool.
-					// (note that we can't break out now 'cuz we have to finish examining the
-					// rest of curRadius)
-					closestObj = thisObj;
-					closestDistSqr = thisDistSqr;
-					closestVec = distVec;
+					PartitionData *thisMod = thisCell->getInlineModule(modIdx);
+					if (thisMod == NULL)
+						continue;
 
-					if (!foundAny)
+					Object *thisObj = thisMod->getObject();
+					++thePartitionQueryObjects;
+
+					// never compare against ourself.
+					if (thisObj == obj || thisObj == NULL)
+						continue;
+
+					// since an object can exist in multiple COIs, we use this to avoid processing
+					// the same one more than once.
+					if (thisMod->friend_getDoneFlag() == theIterFlag)
+						continue;
+					thisMod->friend_setDoneFlag(theIterFlag);
+				
+					Real thisDistSqr;
+					Coord3D distVec;
+					if (!(*distProc)(objPos, objToUse, thisObj->getPosition(), thisObj, thisDistSqr, distVec, closestDistSqr))
+						continue;
+
+					if (!filtersAllow(filters, thisObj))
+						continue;
+
+					// ok, this is within the range, and the filters allow it.
+					// add it to the iter, if we have one....
+					if (iterArg)
 					{
-						// if not adding to iterArg, we want to stop once we have the closest object. 
-						maxRadiusLimit = curRadius;
+						iterArg->insert(thisObj, thisDistSqr);
 					}
-					foundAny = true;
-				}
+					else
+					{
+						closestObj = thisObj;
+						closestDistSqr = thisDistSqr;
+						closestVec = distVec;
 
-			} // next coi
+						if (!foundAny)
+						{
+							// if not adding to iterArg, we want to stop once we have the closest object. 
+							maxRadiusLimit = curRadius;
+						}
+						foundAny = true;
+					}
+				}
+			}
+			else
+			{
+				for (CellAndObjectIntersection *thisCoi = thisCell->getFirstCoiInCell(); thisCoi; thisCoi = thisCoi->getNextCoi())
+				{
+					PartitionData *thisMod = thisCoi->getModule();
+					Object *thisObj = thisMod->getObject();
+					++thePartitionQueryObjects;
+
+					// never compare against ourself.
+					if (thisObj == obj || thisObj == NULL)
+						continue;
+
+					// since an object can exist in multiple COIs, we use this to avoid processing
+					// the same one more than once.
+					if (thisMod->friend_getDoneFlag() == theIterFlag)
+						continue;
+					thisMod->friend_setDoneFlag(theIterFlag);
+				
+					Real thisDistSqr;
+					Coord3D distVec;
+					if (!(*distProc)(objPos, objToUse, thisObj->getPosition(), thisObj, thisDistSqr, distVec, closestDistSqr))
+						continue;
+
+					if (!filtersAllow(filters, thisObj))
+						continue;
+
+					// ok, this is within the range, and the filters allow it.
+					// add it to the iter, if we have one....
+					if (iterArg)
+					{
+						iterArg->insert(thisObj, thisDistSqr);
+					}
+					else
+					{
+						// hey, this is the new closest object! cool.
+						// (note that we can't break out now 'cuz we have to finish examining the
+						// rest of curRadius)
+						closestObj = thisObj;
+						closestDistSqr = thisDistSqr;
+						closestVec = distVec;
+
+						if (!foundAny)
+						{
+							// if not adding to iterArg, we want to stop once we have the closest object. 
+							maxRadiusLimit = curRadius;
+						}
+						foundAny = true;
+					}
+
+				} // next coi
+			}
 		}	// next cell in this radius
   } // next radius
 
@@ -5498,6 +5690,25 @@ PartitionFilterRejectBuildings::PartitionFilterRejectBuildings(const Object *o) 
 }
 
 //-----------------------------------------------------------------------------
+Bool PartitionFilterRejectBuildings::allowCell(const PartitionCell *cell) const
+{
+	if (!m_acquireEnemies && (cell->getCategoryMask() == CELL_CATEGORY_STRUCTURE))
+	{
+		if (m_self && ThePlayerList)
+		{
+			const Player* myPlayer = m_self->getControllingPlayer();
+			if (myPlayer)
+			{
+				PlayerMaskType enemyMask = ThePlayerList->getPlayersWithRelationship(myPlayer->getPlayerIndex(), ALLOW_ENEMIES);
+				if (!cell->hasCoiOfPlayers(enemyMask))
+					return false;
+			}
+		}
+	}
+	return true;
+}
+
+//-----------------------------------------------------------------------------
 Bool PartitionFilterRejectBuildings::allow( Object *other )
 {
 	// this filter allows all non-buildings
@@ -5658,6 +5869,24 @@ Bool PartitionFilterPlayer::allow( Object *other )
 }
 
 //-----------------------------------------------------------------------------
+PartitionFilterPlayerAffiliation::PartitionFilterPlayerAffiliation(const Player *player, UnsignedInt whichAffiliation, Bool match)
+	: m_player(player), m_affiliation(whichAffiliation), m_match(match), m_allowedPlayerMask(PLAYERMASK_ALL)
+{
+	if (m_player && ThePlayerList)
+	{
+		m_allowedPlayerMask = ThePlayerList->getPlayersWithRelationship(m_player->getPlayerIndex(), m_affiliation);
+	}
+}
+
+//-----------------------------------------------------------------------------
+Bool PartitionFilterPlayerAffiliation::allowCell(const PartitionCell *cell) const
+{
+	if (m_match)
+		return cell->hasCoiOfPlayers(m_allowedPlayerMask);
+	return true;
+}
+
+//-----------------------------------------------------------------------------
 Bool PartitionFilterPlayerAffiliation::allow( Object *other )
 {
 	Relationship rel = m_player->getRelationship(other->getTeam());
@@ -5796,6 +6025,33 @@ Bool PartitionFilterSamePlayer::allow(Object *objOther)
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
+
+//-----------------------------------------------------------------------------
+PartitionFilterRelationship::PartitionFilterRelationship(const Object *obj, Int flags)
+	: m_obj(obj), m_flags(flags), m_allowedPlayerMask(PLAYERMASK_ALL)
+{
+	if (m_obj && ThePlayerList)
+	{
+		const Player *player = m_obj->getControllingPlayer();
+		if (player)
+		{
+			UnsignedInt rel = 0;
+			if (m_flags & ALLOW_ALLIES)
+				rel |= ALLOW_ALLIES | ALLOW_SAME_PLAYER;
+			if (m_flags & ALLOW_ENEMIES)
+				rel |= ALLOW_ENEMIES;
+			if (m_flags & ALLOW_NEUTRAL)
+				rel |= ALLOW_NEUTRAL;
+			m_allowedPlayerMask = ThePlayerList->getPlayersWithRelationship(player->getPlayerIndex(), rel);
+		}
+	}
+}
+
+//-----------------------------------------------------------------------------
+Bool PartitionFilterRelationship::allowCell(const PartitionCell *cell) const
+{
+	return cell->hasCoiOfPlayers(m_allowedPlayerMask);
+}
 
 //-----------------------------------------------------------------------------
 Bool PartitionFilterRelationship::allow(Object *objOther)

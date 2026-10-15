@@ -321,6 +321,16 @@ struct ShroudStatusStoreRestore
 	Int m_cellsWide;	// m_cellsHigh is computed by m_foggedOrRevealed[0].size() / m_cellsWide 
 };
 
+enum CellCategoryBits
+{
+	CELL_CATEGORY_NONE				= 0x00,
+	CELL_CATEGORY_DYNAMIC			= 0x01,
+	CELL_CATEGORY_STRUCTURE	= 0x02,
+	CELL_CATEGORY_OBSTACLE		= 0x04
+};
+
+enum { CELL_INLINE_MODULE_CAPACITY = 4 };
+
 //=====================================
 /** 
 	The world's terrain is partitioned into a large grid of Partition Cells.
@@ -331,6 +341,7 @@ class PartitionCell : public Snapshot	// not MPO: allocated in an array
 {
 private:
 	CellAndObjectIntersection*		m_firstCoiInCell;	///< list of COIs in this cell (may be null).
+	PartitionData*								m_inlineModules[CELL_INLINE_MODULE_CAPACITY];	///< compact contiguous module pointers for low occupancy
 	ShroudLevel										m_shroudLevel[MAX_PLAYER_COUNT];
 	Short													m_airLookers[MAX_PLAYER_COUNT];	///< lookers whose circle takes in the air over this cell, hills and roofs or not
 #ifdef PM_CACHE_TERRAIN_HEIGHT
@@ -342,6 +353,11 @@ private:
 	Short													m_coiCount;					///< number of COIs in this cell.
 	UnsignedShort									m_playerCoiCount[MAX_PLAYER_COUNT];	///< COIs in this cell whose Object belongs to each player
 	PlayerMaskType								m_playerCoiMask;		///< players whose m_playerCoiCount is nonzero
+	UnsignedByte									m_categoryMask;			///< bitmask of CellCategoryBits presence
+	UnsignedByte									m_inlineCount;			///< count of valid pointers in m_inlineModules
+	UnsignedShort									m_dynamicCount;			///< count of dynamic units in cell
+	UnsignedShort									m_structureCount;		///< count of structures in cell
+	UnsignedShort									m_obstacleCount;		///< count of obstacles in cell
 	Short													m_cellX;						///< x-coord of this cell within the Partition Mgr coords (NOT in world coords)
 	Short													m_cellY;						///< y-coord of this cell within the Partition Mgr coords (NOT in world coords)
 
@@ -350,9 +366,21 @@ public:
 	// Note, we allocate these in arrays, thus we must have a default ctor (and NOT descend from MPO)
 	PartitionCell();
 #ifdef PM_CACHE_TERRAIN_HEIGHT
-	void init(Int x, Int y, Real loZ, Real hiZ) { m_cellX = x; m_cellY = y; m_loTerrainZ = loZ; m_hiTerrainZ = hiZ; }
+	void init(Int x, Int y, Real loZ, Real hiZ)
+	{
+		m_cellX = x; m_cellY = y; m_loTerrainZ = loZ; m_hiTerrainZ = hiZ;
+		m_categoryMask = 0; m_dynamicCount = 0; m_structureCount = 0; m_obstacleCount = 0;
+		m_inlineCount = 0;
+		for (Int i = 0; i < CELL_INLINE_MODULE_CAPACITY; ++i) m_inlineModules[i] = NULL;
+	}
 #else
-	void init(Int x, Int y) { m_cellX = x; m_cellY = y; }
+	void init(Int x, Int y)
+	{
+		m_cellX = x; m_cellY = y;
+		m_categoryMask = 0; m_dynamicCount = 0; m_structureCount = 0; m_obstacleCount = 0;
+		m_inlineCount = 0;
+		for (Int i = 0; i < CELL_INLINE_MODULE_CAPACITY; ++i) m_inlineModules[i] = NULL;
+	}
 #endif
 	~PartitionCell();
 
@@ -362,9 +390,19 @@ public:
 	void loadPostProcess( void );
 
 	Int getCoiCount() const { return m_coiCount; }		///< return number of COIs touching this cell.
+	UnsignedByte getInlineCount() const { return m_inlineCount; }
+	PartitionData* getInlineModule(Int idx) const { return (idx >= 0 && idx < m_inlineCount) ? m_inlineModules[idx] : NULL; }
+	void rebuildInlineModules();
+	PlayerMaskType getOccupiedPlayerMask() const { return m_playerCoiMask; }
 	Bool hasCoiOfPlayers( PlayerMaskType players ) const { return (m_playerCoiMask & players) != 0; }	///< does any Object of these players touch this cell?
 	void addPlayerCoi( Int playerIndex );
 	void removePlayerCoi( Int playerIndex );
+	UnsignedByte getCategoryMask() const { return m_categoryMask; }
+	Bool hasDynamicUnits() const { return (m_categoryMask & CELL_CATEGORY_DYNAMIC) != 0; }
+	Bool hasStructures() const { return (m_categoryMask & CELL_CATEGORY_STRUCTURE) != 0; }
+	Bool hasObstacles() const { return (m_categoryMask & CELL_CATEGORY_OBSTACLE) != 0; }
+	void addCategory( UnsignedByte category );
+	void removeCategory( UnsignedByte category );
 	Int getCellX() const { return m_cellX; }
 	Int getCellY() const { return m_cellY; }
 
@@ -606,6 +644,7 @@ public:
 	Int friend_getCoiInUseCount() { return m_coiInUseCount; } ///< this is only for use by PartitionManager
 	Int friend_getCountedPlayer() const { return m_countedPlayer; } ///< only for CellAndObjectIntersection
 	void refreshCountedPlayer();	///< move this module's per-player cell counts to its Object's current controlling player
+	void notifyPlayerChanged(Int oldPlayer, Int newPlayer);
 	Bool friend_collidesWith(const PartitionData *that, CollideLocAndNormal *cinfo) const { return collidesWith(that, cinfo); }	///< this is only for use by PartitionContactList
 
 	// these are only for use by getClosestObjects.
@@ -655,6 +694,7 @@ class PartitionFilter
 {
 public:
 	virtual Bool allow(Object *objOther) = 0;
+	virtual Bool allowCell(const PartitionCell *cell) const { return true; }
 #if defined(_DEBUG) || defined(_INTERNAL)
 	virtual const char* debugGetName() = 0;
 #endif
@@ -718,6 +758,7 @@ class PartitionFilterRelationship : public PartitionFilter
 private:
 	const Object *m_obj;
 	Int m_flags;
+	PlayerMaskType m_allowedPlayerMask;
 public:
 	enum RelationshipAllowTypes
 	{
@@ -725,8 +766,9 @@ public:
 		ALLOW_ENEMIES					= (1<<ENEMIES),		///< allow objects that m_obj considers enemy 
 		ALLOW_NEUTRAL					= (1<<NEUTRAL)		///< allow objects that m_obj considers neutral
 	};
-	PartitionFilterRelationship(const Object *obj, Int flags) : m_obj(obj), m_flags(flags) { }
+	PartitionFilterRelationship(const Object *obj, Int flags);
 	virtual Bool allow(Object *objOther);
+	virtual Bool allowCell(const PartitionCell *cell) const;
 #if defined(_DEBUG) || defined(_INTERNAL)
 	virtual const char* debugGetName() { return "PartitionFilterRelationship"; }
 #endif
@@ -1026,6 +1068,7 @@ private:
 	Bool m_acquireEnemies;
 public:
 	PartitionFilterRejectBuildings(const Object *o);
+	virtual Bool allowCell(const PartitionCell *cell) const;
 protected:
 	virtual Bool allow( Object *other );
 #if defined(_DEBUG) || defined(_INTERNAL)
@@ -1160,13 +1203,12 @@ private:
 	const Player *m_player;
 	Bool  m_match;
 	UnsignedInt m_affiliation;
+	PlayerMaskType m_allowedPlayerMask;
 
 public:
 	// whichAffiliation should use AllowPlayerRelationship flags specified in PlayerList.h
-	PartitionFilterPlayerAffiliation(const Player *player, UnsignedInt whichAffiliation, Bool match)
-		: m_player(player), m_affiliation(whichAffiliation), m_match(match) 
-	{
-	}
+	PartitionFilterPlayerAffiliation(const Player *player, UnsignedInt whichAffiliation, Bool match);
+	virtual Bool allowCell(const PartitionCell *cell) const;
 protected:
 	virtual Bool allow( Object *other );
 #if defined(_DEBUG) || defined(_INTERNAL)
